@@ -219,7 +219,177 @@ export function format(text, options = {}) {
         tables: true
     };
 
-    return marked(text, markdownOptions);
+    var pre = preprocessLatex(text);
+    console.log(pre);
+    console.log(pre.text);
+
+    text = marked(pre.text, markdownOptions);
+
+    if(pre.latex.length) {
+        text = postprocessLatex(text, pre.latex);
+    }
+
+    console.log(text);
+    return text;
+}
+
+// Latex helper functions
+
+function findLatex(text) {
+    var regex = /(^|[^\\])(\\\\)*\\\(((.|\n)*?[^\\]|)(\\\\)*?\\\)|(^|[^\\])(\\\\)*\\\[((.|\n)*?[^\\]|)(\\\\)*?\\\]/g;
+
+
+    var latexList = [];
+    var display;
+    var match;
+
+    while(match = regex.exec(text)) {
+        // find the real begin (skip possibly leading '\')
+        var start = match.index;
+        var stop = match.index + match[0].length;
+
+        while(text[start] != "\\" || (text[start+1] != "(" && text[start+1] != "[") ) {
+            start++;
+        }
+
+        if(text[start+1] == "(") display = false;
+        else display = true;
+
+        latexList.push({start: start, stop: stop, display: display});
+    }
+
+    return latexList
+}
+
+function findCode(text) {
+    var fences = /(?:^|\n) *(`{3,}|~{3,})[ \.]*(?:\S+)? *\n(?:[\s\S]*?)\s*\1 *(?:\n+|$)/g;
+    var codeblock = /(?:( *\n){2})( {4}[^\n]+\n*)+/g;
+    var code = /(`+)\s*([\s\S]*?[^`])\s*\1(?!`)/g;
+    var has_paragraph = /\n *\n/g;
+
+    var codeList = [];
+    var match;
+
+    while(match = fences.exec(text)) {
+        codeList.push({start: match.index, stop: match.index + match[0].length})
+    }
+
+    while(match = codeblock.exec(text)) {
+        codeList.push({start: match.index, stop: match.index + match[0].length})
+    }
+
+    while(match = code.exec(text)) {
+        if(!has_paragraph.exec(match[0])) {
+            codeList.push({start: match.index, stop: match.index + match[0].length})
+        }
+    }
+
+    return codeList;
+}
+
+function hasOverlap(start, stop, list) {
+    console.log("checking for overlap", start, stop, list);
+    for(var i = 0; i < list.length; i++) {
+        console.log(list[i].start, list[i].stop);
+        if(start >= list[i].stop || stop <= list[i].start) continue;
+        else {
+             console.log("has overlap");
+             return true;
+        }
+    }
+    return false;
+}
+
+function makeRandomString(length) {
+    var chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890";
+    var randstr = "";
+
+    for(var i = 0; i < length; i++) {
+        var j = Math.floor(Math.random() * chars.length);
+        randstr += chars[j]
+    }
+
+    return randstr;
+}
+
+function preprocessLatex(text) {
+
+    text = text
+    .replace(/\r\n|\r/g, '\n')
+    .replace(/\t/g, '    ')
+    .replace(/\u00a0/g, ' ')
+    .replace(/\u2424/g, '\n');
+
+    var latexList = findLatex(text);
+
+    if(latexList.length == 0) return {text: text, latex: []};
+
+    var codeList = findCode(text);
+
+    var latex = []
+    var finaltext = text.substring(0, latexList[0].start);
+
+    for(var i = 0; i < latexList.length; i++) {
+        var start, end;
+
+        if(i < latexList.length - 1) end = latexList[i+1].start;
+        else end = text.length;
+
+        if(!hasOverlap(latexList[i].start, latexList[i].stop, codeList)) {
+            start = latexList[i].stop;
+
+            var id = makeRandomString(32);
+            finaltext += id;
+
+            latex.push({id: id,
+                tex: text.substring(latexList[i].start, latexList[i].stop),
+                display: latexList[i].display})
+        }
+        else {
+             start = latexList[i].start;
+        }
+        finaltext += text.substring(start, end);
+
+    }
+
+    return {text: finaltext, latex: latex};
+}
+
+function postprocessLatex(text, latex) {
+    console.log(text);
+    for(var i = 0; i < latex.length; i++) {
+
+        // check if Latex ended up in a html tag (link or image - it's easier
+        // to check here than in the preprocessing)
+        var regex = new RegExp("<(a|img)[^>]*?" + latex[i].id + "[^>]*?>")
+        if( regex.exec(text) ) {
+            var latexString;
+            text = text.replace(latex[i].id, latex[i].tex);
+            continue;
+        }
+
+        var html;
+        var texString = latex[i].tex.substring(2, latex[i].tex.length - 2);
+
+        try {
+            html = katex.renderToString(texString,
+                  {throwOnError: false, displayMode: latex[i].display});
+        } catch(error) {
+            html = "<code>" + error.message + "</code>";
+        }
+
+        if(latex[i].display) {
+             // remove possible trailing whitespace after displayed
+             // equation. Also, remove one linebreak if present
+             // (already taken care by the katex css)
+             var regex = new RegExp(latex[i].id + " *\n?");
+             text = text.replace(regex, html);
+        }
+        else {
+            text = text.replace(latex[i].id, html);
+        }
+    }
+    return text;
 }
 
 // Marked helper functions that should probably just be exported
